@@ -44,6 +44,7 @@ MODULES_CONF="/etc/modules-load.d/joeyblog-qdisc.conf"
 SECURITY_MODPROBE_CONF="/etc/modprobe.d/99-joeyblog-security.conf"
 # 可选：提升 GitHub API 限额（支持 GITHUB_TOKEN / GH_TOKEN）
 GITHUB_API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+SPEEDTEST_BIN="speedtest"
 
 gh_api_get() {
     local url="$1"
@@ -193,7 +194,9 @@ calculate_smart_buffer_mb() {
 
 # 函数：确保 Ookla 官方 speedtest 可用
 ensure_ookla_speedtest() {
-    if command -v speedtest > /dev/null 2>&1; then
+    if command -v speedtest > /dev/null 2>&1 \
+        && speedtest --version 2>&1 | grep -q "Speedtest by Ookla"; then
+        SPEEDTEST_BIN=$(command -v speedtest)
         return 0
     fi
 
@@ -222,7 +225,9 @@ ensure_ookla_speedtest() {
         sudo mv speedtest /usr/local/bin/speedtest
         sudo chmod +x /usr/local/bin/speedtest
         rm -f speedtest.tgz speedtest.5 speedtest.md
-    )
+    ) || return 1
+
+    SPEEDTEST_BIN="/usr/local/bin/speedtest"
 }
 
 # 函数：选择中国境内测速运营商
@@ -240,17 +245,17 @@ select_china_speedtest_isp() {
         case "$choice" in
             1)
                 SPEEDTEST_ISP_LABEL="中国移动"
-                SPEEDTEST_ISP_PATTERN='(Mobile|CMCC|China Mobile|中国移动|移动)'
+                SPEEDTEST_SEARCH_QUERY="China%20Mobile"
                 return 0
                 ;;
             2)
                 SPEEDTEST_ISP_LABEL="中国联通"
-                SPEEDTEST_ISP_PATTERN='(Unicom|CUCC|China Unicom|中国联通|联通)'
+                SPEEDTEST_SEARCH_QUERY="China%20Unicom"
                 return 0
                 ;;
             3)
                 SPEEDTEST_ISP_LABEL="中国电信"
-                SPEEDTEST_ISP_PATTERN='(Telecom|CTCC|China Telecom|中国电信|电信)'
+                SPEEDTEST_SEARCH_QUERY="China%20Telecom"
                 return 0
                 ;;
             *)
@@ -260,36 +265,33 @@ select_china_speedtest_isp() {
     done
 }
 
-# 函数：从 Ookla server list 中筛选中国境内节点
-get_china_speedtest_servers() {
-    local isp_pattern="$1"
-    local server_output
-    local china_pattern='(China|Beijing|Shanghai|Guangzhou|Shenzhen|Hangzhou|Nanjing|Wuhan|Chengdu|Chongqing|Tianjin|Xi.?an|Zhengzhou|Changsha|Jinan|Qingdao|Fuzhou|Xiamen|Hefei|Suzhou|Ningbo|Dongguan|Foshan|中国|北京|上海|广州|深圳|杭州|南京|武汉|成都|重庆|天津|西安|郑州|长沙|济南|青岛|福州|厦门|合肥|苏州|宁波|东莞|佛山)'
+# 函数：从 Speedtest server API 中搜索节点
+get_speedtest_api_servers() {
+    local search_query="$1"
+    local country_code="$2"
+    local response
 
-    server_output=$(speedtest --accept-license --accept-gdpr --servers 2>/dev/null || true)
-    if [[ -z "$server_output" ]]; then
+    response=$(curl -fsSL "https://www.speedtest.net/api/js/servers?engine=js&search=${search_query}" 2>/dev/null || true)
+    if [[ -z "$response" ]]; then
         return 1
     fi
 
-    echo "$server_output" \
-        | grep -Ei "$china_pattern" \
-        | grep -Ei "$isp_pattern" \
-        | sed -nE 's/^[[:space:]]*([0-9]+).*/\1/p'
+    echo "$response" | jq -r --arg cc "$country_code" '
+        .[]
+        | select((.cc // "") == $cc)
+        | .id
+    ' 2>/dev/null
 }
 
-# 函数：从 Ookla server list 中筛选香港节点
+# 函数：从 Speedtest server API 中筛选中国境内节点
+get_china_speedtest_servers() {
+    local search_query="$1"
+    get_speedtest_api_servers "$search_query" "CN"
+}
+
+# 函数：从 Speedtest server API 中筛选香港节点
 get_hongkong_speedtest_servers() {
-    local server_output
-    local hongkong_pattern='(Hong[ -]?Kong|Hongkong|香港|HKBN|HKT|CMHK|SmarTone|HGC|PCCW|Netvigator)'
-
-    server_output=$(speedtest --accept-license --accept-gdpr --servers 2>/dev/null || true)
-    if [[ -z "$server_output" ]]; then
-        return 1
-    fi
-
-    echo "$server_output" \
-        | grep -Ei "$hongkong_pattern" \
-        | sed -nE 's/^[[:space:]]*([0-9]+).*/\1/p'
+    get_speedtest_api_servers "Hong%20Kong" "HK"
 }
 
 # 函数：运行 Ookla Speedtest 并解析 Ping/Download/Upload
@@ -306,7 +308,7 @@ run_speedtest_measurement() {
     local servers_list
     local speedtest_output=""
     local attempt=0
-    servers_list=$(get_china_speedtest_servers "$SPEEDTEST_ISP_PATTERN" | head -n 10)
+    servers_list=$(get_china_speedtest_servers "$SPEEDTEST_SEARCH_QUERY" | head -n 10)
     if [[ -z "$servers_list" ]]; then
         echo -e "\033[33m⚠ 未找到匹配运营商的中国境内节点，改用香港节点。\033[0m"
         servers_list=$(get_hongkong_speedtest_servers | head -n 10)
@@ -323,9 +325,9 @@ run_speedtest_measurement() {
         fi
 
         if [[ "$server_id" == "auto" ]]; then
-            speedtest_output=$(speedtest --accept-license --accept-gdpr 2>&1)
+            speedtest_output=$("$SPEEDTEST_BIN" --accept-license --accept-gdpr 2>&1)
         else
-            speedtest_output=$(speedtest --accept-license --accept-gdpr --server-id="$server_id" 2>&1)
+            speedtest_output=$("$SPEEDTEST_BIN" --accept-license --accept-gdpr --server-id="$server_id" 2>&1)
         fi
 
         SPEEDTEST_PING=$(echo "$speedtest_output" | sed -nE 's/.*(Idle Latency|Latency|Ping):[[:space:]]*([0-9]+(\.[0-9]+)?).*/\2/p' | head -n1)
