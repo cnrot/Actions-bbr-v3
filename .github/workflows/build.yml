@@ -8,6 +8,8 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GH_REPO: ${{ github.repository }}
 
 permissions:
   contents: write
@@ -18,7 +20,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      kernel_version: ${{ steps.plan.outputs.kernel_version }}
+      raw_kernel_version: ${{ steps.plan.outputs.raw_kernel_version }}
+      build_needed: ${{ steps.plan.outputs.build_needed }}
+    steps:
+      - name: 检查最新内核和已发布版本
+        id: plan
+        run: |
+          set -euo pipefail
+
+          raw_version=$(curl -fsSL https://www.kernel.org/finger_banner \
+            | awk -F: '/latest stable version/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')
+          if [ -z "$raw_version" ]; then
+            echo "Failed to read latest stable kernel version from kernel.org." >&2
+            exit 1
+          fi
+
+          version="$raw_version"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            version="${version}.0"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected stable kernel version: $raw_version" >&2
+            exit 1
+          fi
+
+          echo "raw_kernel_version=$raw_version" >> "$GITHUB_OUTPUT"
+          echo "kernel_version=$version" >> "$GITHUB_OUTPUT"
+
+          missing=0
+          for arch in x86_64 arm64; do
+            tag="$arch-$version"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag already exists."
+            else
+              echo "$tag is missing."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 0 ]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "All releases for $version already exist; ending workflow before build."
+          else
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            echo "At least one release for $version is missing; build will continue."
+          fi
+
   cleanup:
+    needs: preflight
+    if: needs.preflight.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 删除旧的工作流运行记录
@@ -28,7 +82,8 @@ jobs:
           keep_minimum_runs: 0
 
   build:
-    needs: cleanup
+    needs: [preflight, cleanup]
+    if: ${{ always() && needs.preflight.outputs.build_needed == 'true' && needs.cleanup.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -40,20 +95,12 @@ jobs:
     runs-on: ${{ matrix.runs_on }}
     env:
       ARCH: ${{ matrix.arch }}
-      KERNEL_VERSION: ""
+      KERNEL_VERSION: ${{ needs.preflight.outputs.kernel_version }}
     steps:
-      - name: 获取内核版本
-        id: get_kernel_version
-        run: |
-          version=$(curl -s https://www.kernel.org \
-            | grep -A1 -m1 "stable:" \
-            | grep -oP '\d+\.\d+\.\d+')
-          echo "KERNEL_VERSION=$version" >> $GITHUB_ENV
-
       - name: 检查是否已发布
         id: check_release
         run: |
-          tag="${{ matrix.arch }}-${KERNEL_VERSION}"
+          tag="${{ matrix.arch }}-${{ env.KERNEL_VERSION }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "BUILD_NEEDED=false" >> "$GITHUB_ENV"
             echo "$tag already exists; skipping build."
@@ -189,8 +236,8 @@ jobs:
           body: "带有 BBRv3 的最新内核，适用于 ${{ matrix.arch }} 架构。Compiled & Optimized by Joey."
 
   update-config-baseline:
-    needs: build
-    if: ${{ needs.build.result == 'success' }}
+    needs: [preflight, build]
+    if: ${{ always() && needs.preflight.outputs.build_needed == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
