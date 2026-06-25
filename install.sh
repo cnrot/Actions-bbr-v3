@@ -815,6 +815,8 @@ ensure_iproute2_tools() {
     elif [[ "$PKG_MGR" == "dnf" ]]; then
         sudo dnf install -y iproute2 > /dev/null 2>&1
     fi
+
+    if command -v ip > /dev/null 2>&1 && command -v tc > /dev/null 2>&1; then
         return 0
     fi
 
