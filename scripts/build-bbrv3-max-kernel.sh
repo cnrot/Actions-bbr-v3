@@ -67,14 +67,20 @@ bash "$repo_root/scripts/prepare-kernel-config.sh" "$config_arch"
 
 if [[ "$build_arch" == "arm64" ]]; then
   make ARCH=arm64 bindeb-pkg -j"$(nproc)" LOCALVERSION=-joeyblog-bbrv3-max KDEB_COMPRESS=gzip skipdbg=true
+elif command -v rpmbuild &>/dev/null; then
+  make rpm-pkg -j"$(nproc)" LOCALVERSION=-joeyblog-bbrv3-max
 else
   make bindeb-pkg -j"$(nproc)" LOCALVERSION=-joeyblog-bbrv3-max KDEB_COMPRESS=gzip skipdbg=true
 fi
 
-if find "$workdir" -maxdepth 1 \( -name '*-dbg*.deb' -o -name '*-dbgsym*.deb' \) | grep -q .; then
-  echo "ERROR: debug deb package was generated." >&2
-  find "$workdir" -maxdepth 1 \( -name '*-dbg*.deb' -o -name '*-dbgsym*.deb' \) -print >&2
-  exit 1
+if command -v rpmbuild &>/dev/null; then
+  echo "Generated RPM packages:"
+  find "$workdir/linux/rpmbuild" -name 'kernel-*.rpm' -print | sort
+else
+  if find "$workdir" -maxdepth 1 \( -name '*-dbg*.deb' -o -name '*-dbgsym*.deb' \) | grep -q .; then
+    echo "ERROR: debug deb package was generated." >&2
+    find "$workdir" -maxdepth 1 \( -name '*-dbg*.deb' -o -name '*-dbgsym*.deb' \) -print >&2
+    exit 1
+  fi
+  find "$workdir" -maxdepth 1 -name 'linux-*.deb' -print | sort
 fi
-
-find "$workdir" -maxdepth 1 -name 'linux-*.deb' -print | sort

@@ -1,9 +1,24 @@
 #!/bin/bash
 
-# 限制脚本仅支持基于 Debian/Ubuntu 的系统
-if ! command -v apt-get &> /dev/null; then
-    echo -e "\033[31m此脚本仅支持 Debian/Ubuntu 系统，请在支持 apt-get 和 .deb 内核包的系统上运行！\033[0m"
-    echo -e "\033[33mAlpine Linux 等非 Debian 系统暂不支持安装本项目内核包。\033[0m"
+# 系统检测和包管理器设置
+PKG_MGR=""
+PKG_EXT=".deb"
+INSTALL_CMD="dpkg -i"
+QUERY_CMD="dpkg -l"
+JOYEBLOG_PKG_FILTER='^ii.*linux-image-.*joeyblog'
+REMOVE_CMD='dpkg -l | grep "joeyblog" | awk '\''{print $2}'\'' | tr '\''\\n'\'' '\'' '\'''
+
+if command -v apt-get &> /dev/null; then
+    PKG_MGR="apt"
+elif [ -f /etc/redhat-release ]; then
+    PKG_MGR="dnf"
+    PKG_EXT=".rpm"
+    INSTALL_CMD="rpm -ivh"
+    QUERY_CMD="rpm -q"
+    JOYEBLOG_PKG_FILTER='kernel-.*joeyblog'
+    REMOVE_CMD='rpm -qa | grep "joeyblog" | sort -u | tr '\''\\n'\'' '\'' '\'''
+else
+    echo -e "\033[31m此脚本仅支持 Debian/Ubuntu 和 RHEL 系（Rocky / Alma / CentOS / RHEL）系统。\033[0m"
     exit 1
 fi
 
@@ -18,11 +33,18 @@ if ! command -v sudo &> /dev/null; then
 fi
 
 # 检查并安装必要的依赖
-REQUIRED_CMDS=("curl" "wget" "dpkg" "awk" "sed" "sysctl" "jq")
+REQUIRED_CMDS=("curl" "wget" "awk" "sed" "sysctl" "jq")
+if [[ "$PKG_MGR" == "apt" ]]; then
+    REQUIRED_CMDS+=("dpkg")
+fi
 for cmd in "${REQUIRED_CMDS[@]}"; do
     if ! command -v $cmd &> /dev/null; then
         echo -e "\033[33m缺少依赖：$cmd，正在安装...\033[0m"
-        sudo apt-get update && sudo apt-get install -y $cmd > /dev/null 2>&1
+        if [[ "$PKG_MGR" == "apt" ]]; then
+            sudo apt-get update && sudo apt-get install -y $cmd > /dev/null 2>&1
+        elif [[ "$PKG_MGR" == "dnf" ]]; then
+            sudo dnf install -y $cmd > /dev/null 2>&1
+        fi
     fi
 done
 
@@ -149,6 +171,10 @@ assert_supported_kernel_install_system() {
             if [[ -z "$os_version" ]]; then
                 os_version="$(debian_version_from_codename "$os_codename" || true)"
             fi
+            ;;
+        rhel|rocky|almalinux|centos)
+            min_version="9.0"
+            distro_name="$os_id"
             ;;
         *)
             echo -e "\033[31m当前系统为 $os_name，不在 7.x 主线内核安装白名单内。\033[0m"
@@ -783,8 +809,12 @@ ensure_iproute2_tools() {
     fi
 
     echo -e "\033[36m正在安装 iproute2，用于立即切换当前网卡队列算法...\033[0m"
-    sudo apt-get update > /dev/null 2>&1 || true
-    if sudo apt-get install -y iproute2 > /dev/null 2>&1; then
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        sudo apt-get update > /dev/null 2>&1 || true
+        sudo apt-get install -y iproute2 > /dev/null 2>&1
+    elif [[ "$PKG_MGR" == "dnf" ]]; then
+        sudo dnf install -y iproute2 > /dev/null 2>&1
+    fi
         return 0
     fi
 
@@ -981,7 +1011,11 @@ get_installed_version() {
     local profile="${1:-any}"
     local versions
 
-    versions=$(dpkg -l 2>/dev/null | awk '/^ii/ && $2 ~ /^linux-image-/ && $2 ~ /joeyblog/ {sub(/^linux-image-/, "", $2); print $2}')
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        versions=$(dpkg -l 2>/dev/null | awk '/^ii/ && $2 ~ /^linux-image-/ && $2 ~ /joeyblog/ {sub(/^linux-image-/, "", $2); print $2}')
+    else
+        versions=$(rpm -qa --queryformat '%{VERSION}\n' 2>/dev/null | grep joeyblog | sed 's/_/-/g')
+    fi
     case "$profile" in
         standard)
             echo "$versions" | grep -E -- '-joeyblog-bbrv3$' | sort -V | tail -n 1
@@ -1062,6 +1096,15 @@ update_bootloader() {
             echo -e "\033[1;31mGRUB 更新失败！\033[0m"
             return 1
         fi
+    elif command -v grub2-mkconfig &> /dev/null; then
+        echo -e "\033[33m检测到 GRUB2，正在执行 grub2-mkconfig...\033[0m"
+        if sudo grub2-mkconfig -o /boot/grub2/grub.cfg; then
+            echo -e "\033[1;32mGRUB2 更新成功！\033[0m"
+            return 0
+        else
+            echo -e "\033[1;31mGRUB2 更新失败！\033[0m"
+            return 1
+        fi
     else
         echo -e "\033[33m未找到 'update-grub'。您的系统可能使用 U-Boot 或其他引导程序。\033[0m"
         echo -e "\033[33m在许多 ARM 系统上，内核安装包会自动处理引导更新，通常无需手动操作。\033[0m"
@@ -1072,38 +1115,81 @@ update_bootloader() {
 
 # 函数：安全地安装下载的包
 install_packages() {
-    if ! ls /tmp/linux-*.deb &> /dev/null; then
-        echo -e "\033[31m错误：未在 /tmp 目录下找到内核文件，安装中止。\033[0m"
-        return 1
-    fi
-
-    for deb_file in /tmp/linux-*.deb; do
-        if ! dpkg-deb -I "$deb_file" > /dev/null 2>&1; then
-            echo -e "\033[31m当前系统无法读取安装包：$deb_file\033[0m"
-            echo -e "\033[33m可能原因：dpkg 版本过旧，不支持该压缩格式。建议升级 dpkg 后重试。\033[0m"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        if ! ls /tmp/linux-*.deb &> /dev/null; then
+            echo -e "\033[31m错误：未在 /tmp 目录下找到内核 .deb 文件，安装中止。\033[0m"
             return 1
         fi
-    done
-    
-    echo -e "\033[36m开始卸载旧版内核... \033[0m"
-    INSTALLED_PACKAGES=$(dpkg -l | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
-    if [[ -n "$INSTALLED_PACKAGES" ]]; then
-        sudo apt-get remove --purge $INSTALLED_PACKAGES -y > /dev/null 2>&1
+
+        for deb_file in /tmp/linux-*.deb; do
+            if ! dpkg-deb -I "$deb_file" > /dev/null 2>&1; then
+                echo -e "\033[31m当前系统无法读取安装包：$deb_file\033[0m"
+                echo -e "\033[33m可能原因：dpkg 版本过旧，不支持该压缩格式。建议升级 dpkg 后重试。\033[0m"
+                return 1
+            fi
+        done
+
+        echo -e "\033[36m开始卸载旧版内核... \033[0m"
+        INSTALLED_PACKAGES=$(dpkg -l | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+        if [[ -n "$INSTALLED_PACKAGES" ]]; then
+            sudo apt-get remove --purge $INSTALLED_PACKAGES -y > /dev/null 2>&1
+        fi
+
+        echo -e "\033[36m开始安装新内核... \033[0m"
+        if sudo dpkg -i /tmp/linux-*.deb; then
+            update_bootloader
+            echo -e "\033[1;32m内核安装并配置完成！\033[0m"
+        else
+            echo -e "\033[1;31m内核安装或引导更新失败！系统可能处于不稳定状态。请不要重启并寻求手动修复！\033[0m"
+            return 1
+        fi
+    elif [[ "$PKG_MGR" == "dnf" ]]; then
+        if ! ls /tmp/kernel-*.rpm &> /dev/null; then
+            echo -e "\033[31m错误：未在 /tmp 目录下找到内核 .rpm 文件，安装中止。\033[0m"
+            return 1
+        fi
+
+        echo -e "\033[36m开始卸载旧版内核... \033[0m"
+        OLD_KERNELS=$(rpm -qa | grep joeyblog | sort -u | tr '\n' ' ')
+        if [[ -n "$OLD_KERNELS" ]]; then
+            # 跳过正在运行的内核
+            RUNNING_KERNEL=$(uname -r)
+            for pkg in $OLD_KERNELS; do
+                if rpm -q "$pkg" --queryformat '%{NAME}-%{VERSION}-%{RELEASE}\n' | grep -q "$RUNNING_KERNEL"; then
+                    echo -e "\033[33m跳过正在运行的内核包: $pkg\033[0m"
+                else
+                    sudo rpm -e "$pkg" > /dev/null 2>&1 || true
+                fi
+            done
+        fi
+
+        echo -e "\033[36m开始安装新内核... \033[0m"
+        # 先使用 rpm -ivh 安装（避免 -U 替换现存内核的默认启动项）
+        # 只安装 kernel-*.rpm，排除 kernel-devel 和 kernel-headers
+        for rpm_file in /tmp/kernel-[0-9]*.rpm; do
+            if [[ -f "$rpm_file" ]]; then
+                echo -e "\033[36m  安装: $(basename $rpm_file)\033[0m"
+                sudo rpm -ivh "$rpm_file" > /dev/null 2>&1 || true
+            fi
+        done
+
+        # RPM %post 脚本自动运行 kernel-install（depmod + dracut + grub）
+        echo -e "\033[36m确保新内核设为默认启动项...\033[0m"
+        NEW_VMLINUZ=$(ls -t /boot/vmlinuz-*joeyblog* 2>/dev/null | head -1)
+        if [[ -n "$NEW_VMLINUZ" ]] && command -v grubby &> /dev/null; then
+            sudo grubby --set-default="$NEW_VMLINUZ" 2>/dev/null || true
+        fi
+
+        echo -e "\033[1;32m内核安装完成！\033[0m"
     fi
 
-    echo -e "\033[36m开始安装新内核... \033[0m"
-    if sudo dpkg -i /tmp/linux-*.deb && update_bootloader; then
-        echo -e "\033[1;32m内核安装并配置完成！\033[0m"
-        echo -n -e "\033[33m需要重启系统来加载新内核。是否立即重启？ (y/n): \033[0m"
-        read -r REBOOT_NOW
-        if [[ "$REBOOT_NOW" == "y" || "$REBOOT_NOW" == "Y" ]]; then
-            echo -e "\033[36m系统即将重启...\033[0m"
-            sudo reboot
-        else
-            echo -e "\033[33m操作完成。请记得稍后手动重启 ('sudo reboot') 来应用新内核。\033[0m"
-        fi
+    echo -n -e "\033[33m需要重启系统来加载新内核。是否立即重启？ (y/n): \033[0m"
+    read -r REBOOT_NOW
+    if [[ "$REBOOT_NOW" == "y" || "$REBOOT_NOW" == "Y" ]]; then
+        echo -e "\033[36m系统即将重启...\033[0m"
+        sudo reboot
     else
-        echo -e "\033[1;31m内核安装或引导更新失败！系统可能处于不稳定状态。请不要重启并寻求手动修复！\033[0m"
+        echo -e "\033[33m操作完成。请记得稍后手动重启 ('sudo reboot') 来应用新内核。\033[0m"
     fi
 }
 
@@ -1154,18 +1240,23 @@ install_latest_version() {
     fi
 
     echo -e "\033[33m发现新版本或未安装内核，准备下载...\033[0m"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        ASSET_FILTER='select(test("(-dbg_|-dbgsym_)"; "i") | not) | select(test("\\.deb$"))'
+        rm -f /tmp/linux-*.deb
+    else
+        ASSET_FILTER='select(test("\\.rpm$")) | select(test("kernel-(devel|headers)-") | not)'
+        rm -f /tmp/kernel-*.rpm
+    fi
     ASSET_URLS=$(echo "$RELEASE_DATA" | jq -r --arg tag "$LATEST_TAG_NAME" '
       .[] | select(.tag_name == $tag) | .assets[].browser_download_url
-      | select(test("(-dbg_|-dbgsym_)"; "i") | not)
+      | '"$ASSET_FILTER"'
     ')
-    
-    rm -f /tmp/linux-*.deb
 
     for URL in $ASSET_URLS; do
         echo -e "\033[36m正在下载文件：$URL\033[0m"
         wget -q --show-progress "$URL" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
-    
+
     install_packages
 }
 
@@ -1218,12 +1309,17 @@ install_specific_version() {
     SELECTED_TAG="${TAG_ARRAY[$INDEX]}"
     echo -e "\033[36m已选择版本：\033[0m\033[1;32m$SELECTED_TAG\033[0m"
 
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        ASSET_FILTER='select(test("(-dbg_|-dbgsym_)"; "i") | not) | select(test("\\.deb$"))'
+    else
+        ASSET_FILTER='select(test("\\.rpm$")) | select(test("kernel-(devel|headers)-") | not)'
+    fi
     ASSET_URLS=$(echo "$RELEASE_DATA" | jq -r --arg tag "$SELECTED_TAG" '
       .[] | select(.tag_name == $tag) | .assets[].browser_download_url
-      | select(test("(-dbg_|-dbgsym_)"; "i") | not)
+      | '"$ASSET_FILTER"'
     ')
-    
-    rm -f /tmp/linux-*.deb
+
+    rm -f /tmp/linux-*.deb /tmp/kernel-*.rpm
     
     for URL in $ASSET_URLS; do
         echo -e "\033[36m下载中：$URL\033[0m"
@@ -1349,10 +1445,20 @@ case "$ACTION" in
         ;;
     9)
         echo -e "\033[1;32mヽ(・∀・)ノ 您选择了卸载 BBR 内核！\033[0m"
-        PACKAGES_TO_REMOVE=$(dpkg -l | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+        if [[ "$PKG_MGR" == "apt" ]]; then
+            PACKAGES_TO_REMOVE=$(dpkg -l | grep "joeyblog" | awk '{print $2}' | tr '\n' ' ')
+        else
+            PACKAGES_TO_REMOVE=$(rpm -qa | grep "joeyblog" | sort -u | tr '\n' ' ')
+        fi
         if [[ -n "$PACKAGES_TO_REMOVE" ]]; then
             echo -e "\033[36m将要卸载以下内核包: \033[33m$PACKAGES_TO_REMOVE\033[0m"
-            sudo apt-get remove --purge $PACKAGES_TO_REMOVE -y
+            if [[ "$PKG_MGR" == "apt" ]]; then
+                sudo apt-get remove --purge $PACKAGES_TO_REMOVE -y
+            else
+                for pkg in $PACKAGES_TO_REMOVE; do
+                    sudo rpm -e "$pkg" > /dev/null 2>&1 || true
+                done
+            fi
             update_bootloader
             echo -e "\033[1;32m内核包已卸载。请记得重启系统。\033[0m"
         else

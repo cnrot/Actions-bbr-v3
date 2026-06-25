@@ -144,7 +144,8 @@ jobs:
             libncurses-dev libssl-dev libelf-dev \
             bison bc flex rsync debhelper \
             dpkg-dev fakeroot kmod cpio dwarves \
-            libdw-dev lz4 zstd xz-utils curl jq
+            libdw-dev lz4 zstd xz-utils curl jq \
+            rpm
 
       - name: 创建源码目录
         if: env.BUILD_NEEDED == 'true'
@@ -229,6 +230,21 @@ jobs:
           fi
           find ./kernel -maxdepth 1 -name 'linux-*.deb' -print | sort
 
+      - name: 构建内核 RPM 包（仅 x86_64）
+        if: env.BUILD_NEEDED == 'true' && matrix.arch == 'x86_64'
+        working-directory: ./kernel/linux
+        run: |
+          rm -f .version
+          make rpm-pkg -j$(nproc) LOCALVERSION=${{ matrix.localversion }} RPMOPTS="--nodeps"
+
+      - name: 检查 rpm 包
+        if: env.BUILD_NEEDED == 'true' && matrix.arch == 'x86_64'
+        run: |
+          find ./kernel/linux/rpmbuild -name 'kernel-*.rpm' -print | sort
+          mkdir -p ./kernel/rpms
+          cp ./kernel/linux/rpmbuild/RPMS/*/kernel-*.rpm ./kernel/rpms/ 2>/dev/null || true
+          ls -la ./kernel/rpms/
+
       - name: 发布前复查是否已发布
         if: env.BUILD_NEEDED == 'true'
         run: |
@@ -257,6 +273,13 @@ jobs:
           name: deb-${{ matrix.arch }}-${{ matrix.profile }}
           path: ./kernel/linux-*.deb
 
+      - name: 上传 rpm 包
+        if: env.BUILD_NEEDED == 'true' && env.PUBLISH_NEEDED == 'true' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.arch }}-${{ matrix.profile }}
+          path: ./kernel/rpms/kernel-*.rpm
+
       - name: 发布到 GitHub Release
         if: env.BUILD_NEEDED == 'true' && env.PUBLISH_NEEDED == 'true'
         uses: softprops/action-gh-release@v2
@@ -264,6 +287,7 @@ jobs:
           tag_name: ${{ matrix.arch }}-${{ env.KERNEL_VERSION }}${{ matrix.release_suffix }}
           files: |
             ./kernel/linux-*.deb
+            ./kernel/rpms/kernel-*.rpm
             ./build-configs/${{ matrix.arch }}-${{ env.KERNEL_VERSION }}.config
           body: "带有 ${{ matrix.profile_name }} 的最新内核，适用于 ${{ matrix.arch }} 架构。Compiled & Optimized by Joey."
 
