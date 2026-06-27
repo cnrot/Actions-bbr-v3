@@ -5,7 +5,10 @@
 脚本入口：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh)
+# 通过镜像加速下载（推荐）
+bash <(curl -fsSL https://git.dbgio.org/https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh)
+# 直连 GitHub（网络通畅时可用）
+# bash <(curl -fsSL https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh)
 ```
 
 首次运行后脚本会自动安装联网快捷命令，后续可直接运行：

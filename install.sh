@@ -66,7 +66,7 @@ MODULES_CONF="/etc/modules-load.d/joeyblog-qdisc.conf"
 # 安全加固配置（Dirty Frag 风险面收敛）
 SECURITY_MODPROBE_CONF="/etc/modprobe.d/99-joeyblog-security.conf"
 # 脚本远程入口和本地快捷命令
-INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh"
+INSTALL_SCRIPT_URL="https://git.dbgio.org/https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh"
 QUICK_COMMAND_PATH="/usr/local/bin/b"
 # 下载镜像前缀（GitHub Release 下载通过此镜像加速）
 DOWNLOAD_MIRROR_PREFIX="https://git.dbgio.org"
