@@ -57,6 +57,16 @@ jobs:
               tag="$arch-$version$suffix"
               if gh release view "$tag" >/dev/null 2>&1; then
                 echo "$tag already exists."
+                # x86_64 release 缺少 .rpm 时视为缺失
+                if [ "$arch" = "x86_64" ]; then
+                  if gh release view "$tag" --json assets 2>/dev/null | \
+                     jq -e '.assets[] | select(.name | endswith(".rpm"))' >/dev/null 2>&1; then
+                    echo "  RPM assets found."
+                  else
+                    echo "  RPM assets missing; rebuild needed."
+                    missing=1
+                  fi
+                fi
               else
                 echo "$tag is missing."
                 missing=1
@@ -124,8 +134,20 @@ jobs:
         run: |
           tag="${{ matrix.arch }}-${{ env.KERNEL_VERSION }}${{ matrix.release_suffix }}"
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "BUILD_NEEDED=false" >> "$GITHUB_ENV"
-            echo "$tag already exists; skipping build."
+            # x86_64 缺少 .rpm 时重新构建
+            if [ "${{ matrix.arch }}" = "x86_64" ]; then
+              if gh release view "$tag" --json assets 2>/dev/null | \
+                 jq -e '.assets[] | select(.name | endswith(".rpm"))' >/dev/null 2>&1; then
+                echo "BUILD_NEEDED=false" >> "$GITHUB_ENV"
+                echo "$tag already exists with RPM assets; skipping build."
+              else
+                echo "BUILD_NEEDED=true" >> "$GITHUB_ENV"
+                echo "$tag exists but missing RPM assets; rebuilding."
+              fi
+            else
+              echo "BUILD_NEEDED=false" >> "$GITHUB_ENV"
+              echo "$tag already exists; skipping build."
+            fi
           else
             echo "BUILD_NEEDED=true" >> "$GITHUB_ENV"
             echo "$tag does not exist; building latest kernel with ${{ matrix.profile_name }}."
