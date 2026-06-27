@@ -79,7 +79,7 @@ OOKLA_SPEEDTEST_VERSION="1.2.0"
 map_download_url() {
     local url="$1"
     if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
-        echo "$url" | sed "s|https://github.com/|${DOWNLOAD_MIRROR_PREFIX%/}/|"
+        echo "${DOWNLOAD_MIRROR_PREFIX%/}${url}"
     else
         echo "$url"
     fi
