@@ -79,7 +79,8 @@ OOKLA_SPEEDTEST_VERSION="1.2.0"
 map_download_url() {
     local url="$1"
     if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
-        echo "${DOWNLOAD_MIRROR_PREFIX%/}${url}"
+        local prefix="${DOWNLOAD_MIRROR_PREFIX%/}"
+        echo "${prefix}/${url}"
     else
         echo "$url"
     fi
