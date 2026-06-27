@@ -1268,6 +1268,9 @@ install_latest_version() {
 
     for URL in $ASSET_URLS; do
         echo -e "\033[36m正在下载文件：$URL\033[0m"
+        if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
+            echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
+        fi
         wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
@@ -1337,6 +1340,9 @@ install_specific_version() {
     
     for URL in $ASSET_URLS; do
         echo -e "\033[36m下载中：$URL\033[0m"
+        if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
+            echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
+        fi
         wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
