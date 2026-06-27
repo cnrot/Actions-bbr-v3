@@ -68,8 +68,8 @@ SECURITY_MODPROBE_CONF="/etc/modprobe.d/99-joeyblog-security.conf"
 # 脚本远程入口和本地快捷命令
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh"
 QUICK_COMMAND_PATH="/usr/local/bin/b"
-# 下载镜像前缀（设此变量后 GitHub Release 下载域名会被替换）
-DOWNLOAD_MIRROR_PREFIX="${BBRV3_DOWNLOAD_MIRROR:-}"
+# 下载镜像前缀（GitHub Release 下载通过此镜像加速）
+DOWNLOAD_MIRROR_PREFIX="https://git.dbgio.org"
 # 可选：提升 GitHub API 限额（支持 GITHUB_TOKEN / GH_TOKEN）
 GITHUB_API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 SPEEDTEST_BIN="speedtest"
@@ -78,12 +78,8 @@ OOKLA_SPEEDTEST_VERSION="1.2.0"
 # 函数：如果有镜像前缀则替换下载域名
 map_download_url() {
     local url="$1"
-    if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
-        local prefix="${DOWNLOAD_MIRROR_PREFIX%/}"
-        echo "${prefix}/${url}"
-    else
-        echo "$url"
-    fi
+    local prefix="${DOWNLOAD_MIRROR_PREFIX%/}"
+    echo "${prefix}/${url}"
 }
 
 gh_api_get() {
@@ -1269,9 +1265,7 @@ install_latest_version() {
 
     for URL in $ASSET_URLS; do
         echo -e "\033[36m正在下载文件：$URL\033[0m"
-        if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
-            echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
-        fi
+        echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
         wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
@@ -1341,9 +1335,7 @@ install_specific_version() {
     
     for URL in $ASSET_URLS; do
         echo -e "\033[36m下载中：$URL\033[0m"
-        if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
-            echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
-        fi
+        echo -e "\033[33m  镜像加速：$(map_download_url "$URL")\033[0m"
         wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
