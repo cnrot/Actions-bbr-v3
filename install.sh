@@ -68,10 +68,22 @@ SECURITY_MODPROBE_CONF="/etc/modprobe.d/99-joeyblog-security.conf"
 # 脚本远程入口和本地快捷命令
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/cnrot/Actions-bbr-v3/main/install.sh"
 QUICK_COMMAND_PATH="/usr/local/bin/b"
+# 下载镜像前缀（设此变量后 GitHub Release 下载域名会被替换）
+DOWNLOAD_MIRROR_PREFIX="${BBRV3_DOWNLOAD_MIRROR:-}"
 # 可选：提升 GitHub API 限额（支持 GITHUB_TOKEN / GH_TOKEN）
 GITHUB_API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 SPEEDTEST_BIN="speedtest"
 OOKLA_SPEEDTEST_VERSION="1.2.0"
+
+# 函数：如果有镜像前缀则替换下载域名
+map_download_url() {
+    local url="$1"
+    if [[ -n "$DOWNLOAD_MIRROR_PREFIX" ]]; then
+        echo "$url" | sed "s|https://github.com/|${DOWNLOAD_MIRROR_PREFIX%/}/|"
+    else
+        echo "$url"
+    fi
+}
 
 gh_api_get() {
     local url="$1"
@@ -1256,7 +1268,7 @@ install_latest_version() {
 
     for URL in $ASSET_URLS; do
         echo -e "\033[36m正在下载文件：$URL\033[0m"
-        wget -q --show-progress "$URL" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
+        wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
     install_packages
@@ -1325,7 +1337,7 @@ install_specific_version() {
     
     for URL in $ASSET_URLS; do
         echo -e "\033[36m下载中：$URL\033[0m"
-        wget -q --show-progress "$URL" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
+        wget -q --show-progress "$(map_download_url "$URL")" -P /tmp/ || { echo -e "\033[31m下载失败：$URL\033[0m"; return 1; }
     done
 
     install_packages
